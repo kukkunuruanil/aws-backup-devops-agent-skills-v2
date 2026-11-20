@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS DevOps Agent elevated role for AWS Backup remediation (directed actions).
+  Deploy in each AWS account the agent investigates (for example as a CloudFormation
+  StackSet instance), in the same Region as the Agent Space. Then register the role ARN as
+  agentElevatedRoleArn on that account's association.
+
+  The permission policy is a CEILING, not a grant. Every directed action still needs
+  operator approval, and the credentials are narrowed to the approved operation.
+
+Parameters:
+  AgentSpaceAccountId:
+    Type: String
+    Default: ''
+    Description: Account ID that owns the Agent Space. Leave empty if the Agent Space is in this account.
+
+Conditions:
+  AgentSpaceInThisAccount: !Equals [!Ref AgentSpaceAccountId, '']
+
+Resources:
+  DevOpsAgentElevatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DevOpsAgent-ElevatedAction-Backup
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: aidevops.amazonaws.com
+            # All three actions are required. Without SetSourceIdentity and TagSession,
+            # directed actions fail at credential time even if validation shows "valid".
+            Action:
+              - sts:AssumeRole
+              - sts:SetSourceIdentity
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !If [AgentSpaceInThisAccount, !Ref 'AWS::AccountId', !Ref AgentSpaceAccountId]
+              ArnLike:
+                aws:SourceArn: !If
+                  - AgentSpaceInThisAccount
+                  - !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/*
+                  - !Sub arn:aws:aidevops:${AWS::Region}:${AgentSpaceAccountId}:agentspace/*
+      # Customer-managed ceiling. Do not attach AIDevOpsAgentActionsPolicy here: it allows
+      # all actions on all resources (except identity services).
+      Policies:
+        - PolicyName: DevOpsAgentBackupScopedActions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Re-enable a disabled key that backup uses. Tag-gated.
+              - Sid: EnableTaggedBackupKeys
+                Effect: Allow
+                Action:
+                  - kms:EnableKey
+                Resource: !Sub arn:aws:kms:*:${AWS::AccountId}:key/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/DevOpsAgentManaged: 'true'
+              # Align a backup plan's lifecycle with a vault's lock range, or lengthen a window.
+              - Sid: UpdateTaggedBackupPlans
+                Effect: Allow
+                Action:
+                  - backup:UpdateBackupPlan
+                Resource: !Sub arn:aws:backup:*:${AWS::AccountId}:backup-plan:*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/DevOpsAgentManaged: 'true'
+              # Read calls the agent needs to build an accurate proposal.
+              - Sid: ReadBackupAndKeyState
+                Effect: Allow
+                Action:
+                  - backup:Describe*
+                  - backup:Get*
+                  - backup:List*
+                  - kms:DescribeKey
+                  - kms:GetKeyPolicy
+                Resource: '*'
+
+Outputs:
+  ElevatedRoleArn:
+    Description: Register this ARN as agentElevatedRoleArn on the association for this account.
+    Value: !GetAtt DevOpsAgentElevatedRole.Arn
+
+# Before use:
+# 1. Open Configuration > Agent Actions > View Supported Actions in the AWS DevOps Agent
+#    console. Remove any action above that is not on the list. An action outside the list
+#    can never be part of an approved session.
+# 2. Tag only the keys and plans you want the agent to act on with DevOpsAgentManaged=true.
+# 3. Deliberately absent: delete operations (the agent refuses them), actions that pass a role
+#    to a service such as backup:StartBackupJob and backup:StartCopyJob (the agent does not
+#    support iam:PassRole by default), and IAM changes.
+# 4. Confirm the condition-key form (aws:ResourceTag) works for each action in a test account.

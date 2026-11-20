@@ -1,4 +1,4 @@
-# aws-backup-devops-agent-skills
+# aws-backup-devops-agent-skills-v2
 
 Version-controlled AWS Backup expertise for AWS DevOps Agent. Push this repository to GitHub, associate the GitHub account with your Agent Space, and import each Skill directory with **Knowledge > Skills > Add skill > Import from repository**. After you change a Skill in Git, open it in the Agent Space and choose **Sync**.
 
